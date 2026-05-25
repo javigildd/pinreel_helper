@@ -188,12 +188,20 @@ async function runQueueBatch() {
     }
 
     try {
-      await visitPinPage(todo[i].pinUrl);
-      // Always record an attempt — even if the page yielded no media. Without
-      // this, image-only carousels (which Pinterest still flags as
-      // multiple_images / animated) would re-enter the queue forever.
-      // recordVisitAttempt only writes if no record exists, so real captures
-      // posted by the content script during the visit are preserved.
+      // First try Pinterest's own resource endpoint with the user's cookies
+      // — this gets us per-slide videos for carousels reliably, which the
+      // pin-page tab visit can't because subsequent slides are lazy-loaded
+      // on user interaction. If that fails (no session, CSRF block, shape
+      // changed), fall back to visiting the page in a background tab so
+      // the content script can still pick up whatever's in the initial JSON.
+      const resourceItem = await fetchPinResource(todo[i].pinId);
+      if (resourceItem) {
+        await saveCapture(resourceItem);
+      } else {
+        await visitPinPage(todo[i].pinUrl);
+      }
+      // Always record an attempt — even if both paths yielded no media.
+      // recordVisitAttempt only writes if no record exists.
       await recordVisitAttempt(todo[i].pinId);
     } catch {
       // Carry on; one bad pin shouldn't stall the whole queue.
@@ -212,6 +220,157 @@ async function runQueueBatch() {
   batchState.running = false;
   broadcastBatch({ finished: true });
   await trySyncToEndpoint();
+}
+
+// Hit Pinterest's internal PinResource endpoint to get the full pin object,
+// which (when the user is signed into Pinterest) includes per-slide videos
+// that aren't in the public OAuth API or in pin-page initial HTML. Runs
+// under the user's own pinterest.com session cookies via host_permissions.
+async function fetchPinResource(pinId) {
+  try {
+    const data = encodeURIComponent(
+      JSON.stringify({
+        options: { id: String(pinId), field_set_key: "detailed" },
+      }),
+    );
+    const url =
+      `https://www.pinterest.com/resource/PinResource/get/` +
+      `?source_url=${encodeURIComponent(`/pin/${pinId}/`)}&data=${data}`;
+    const res = await fetch(url, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      console.log(
+        "[PinReel] PinResource HTTP",
+        res.status,
+        "for",
+        pinId,
+        "- falling back to tab visit",
+      );
+      return null;
+    }
+    const json = await res.json();
+    const node = json?.resource_response?.data;
+    if (!node || typeof node !== "object") return null;
+    const item = nodeToItem(node, String(pinId));
+    if (!item || (!item.videoUrl && !item.slides)) return null;
+    console.log("[PinReel] PinResource captured", pinId, {
+      hasVideoUrl: !!item.videoUrl,
+      slideCount: Array.isArray(item.slides) ? item.slides.length : 0,
+      slideVideos: Array.isArray(item.slides)
+        ? item.slides.filter((s) => s?.videoUrl).length
+        : 0,
+    });
+    return item;
+  } catch (e) {
+    console.log("[PinReel] PinResource error", e.message);
+    return null;
+  }
+}
+
+// Mini-extractor mirroring content.js logic but inlined here so the
+// background worker can use it without a content script. Handles
+// carousels, story pins, single videos, and falls back to walking the
+// subtree for any video_list.
+function nodeToItem(node, pinId) {
+  const item = { pinId };
+  // Top-level single video.
+  if (node.videos) {
+    const v = bestVideoUrlFromAny(node.videos);
+    if (v) item.videoUrl = v;
+  }
+  // Classic multi-image / multi-video carousel.
+  if (Array.isArray(node.carousel_data?.carousel_slots)) {
+    item.slides = node.carousel_data.carousel_slots.map((slot) => {
+      const slide = {};
+      const i = bestImageUrlFromAny(slot.images);
+      if (i) slide.imageUrl = i;
+      const v = bestVideoUrlFromAny(slot.videos);
+      if (v) slide.videoUrl = v;
+      return slide;
+    });
+  }
+  // Story pin pages.
+  if (!item.slides && Array.isArray(node.story_pin_data?.pages)) {
+    const slides = node.story_pin_data.pages
+      .map((page) => {
+        const slide = {};
+        const direct = page.video || page.video_data;
+        const directImg = page.image || page.image_data;
+        if (direct) {
+          const v = bestVideoUrlFromAny(
+            direct.video_list || direct.videos || direct,
+          );
+          if (v) slide.videoUrl = v;
+          const imgs =
+            direct.image_signature_data?.images || direct.images;
+          if (imgs && !slide.imageUrl) {
+            const i = bestImageUrlFromAny(imgs);
+            if (i) slide.imageUrl = i;
+          }
+        }
+        if (directImg && !slide.imageUrl) {
+          const imgs = directImg.images || directImg;
+          const i = bestImageUrlFromAny(imgs);
+          if (i) slide.imageUrl = i;
+        }
+        if (Array.isArray(page.blocks)) {
+          for (const b of page.blocks) {
+            if (!slide.videoUrl && b?.video) {
+              const v = bestVideoUrlFromAny(
+                b.video.video_list || b.video.videos || b.video,
+              );
+              if (v) slide.videoUrl = v;
+            }
+            if (!slide.imageUrl && b?.image?.images) {
+              const i = bestImageUrlFromAny(b.image.images);
+              if (i) slide.imageUrl = i;
+            }
+          }
+        }
+        return slide;
+      })
+      .filter((s) => s && (s.imageUrl || s.videoUrl));
+    if (slides.length > 0) item.slides = slides;
+  }
+  return item;
+}
+
+const PREFERRED_VIDEO_KEYS = [
+  "V_720P",
+  "V_EXP3",
+  "V_EXP4",
+  "V_EXP5",
+  "V_EXP6",
+  "V_1080P",
+  "V_HLSV4",
+];
+function bestVideoUrlFromAny(videos) {
+  if (!videos || typeof videos !== "object") return null;
+  const list = videos.video_list || videos;
+  for (const k of PREFERRED_VIDEO_KEYS) {
+    const v = list?.[k];
+    if (v?.url && /^https?:\/\//.test(v.url)) return v.url;
+  }
+  for (const v of Object.values(list || {})) {
+    if (v?.url && /^https?:\/\//.test(v.url) && /\.mp4(\?|$)/.test(v.url)) {
+      return v.url;
+    }
+  }
+  return null;
+}
+function bestImageUrlFromAny(images) {
+  if (!images || typeof images !== "object") return null;
+  const preferred = ["orig", "originals", "1200x", "736x", "600x"];
+  for (const k of preferred) {
+    const im = images[k];
+    if (im?.url) return im.url;
+  }
+  for (const im of Object.values(images)) {
+    if (im?.url) return im.url;
+  }
+  return null;
 }
 
 function visitPinPage(url) {
