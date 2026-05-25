@@ -227,12 +227,10 @@ async function runQueueBatch() {
       // on user interaction. If that fails (no session, CSRF block, shape
       // changed), fall back to visiting the page in a background tab so
       // the content script can still pick up whatever's in the initial JSON.
-      const resourceItem = await fetchPinResource(todo[i].pinId);
-      if (resourceItem) {
-        await saveCapture(resourceItem);
-      } else {
-        await visitPinPage(todo[i].pinUrl, todo[i].pinId);
-      }
+      // Always do a tab visit — visitPinPage injects a page-context fetch
+      // to PinResource (the same endpoint that 403s from the extension
+      // origin) which is how we get all carousel slide videos in one shot.
+      await visitPinPage(todo[i].pinUrl, todo[i].pinId);
       // Always record an attempt — even if both paths yielded no media.
       // recordVisitAttempt only writes if no record exists.
       await recordVisitAttempt(todo[i].pinId);
@@ -455,11 +453,49 @@ function visitPinPage(url, pinId) {
         }
         resolve();
       };
-      const onUpdated = (id, info) => {
+      const onUpdated = async (id, info) => {
         if (id !== tabId) return;
-        if (info.status === "complete") {
-          setTimeout(cleanup, POST_LOAD_WAIT_MS);
+        if (info.status !== "complete") return;
+        // Inject a fetch into the page context. Pinterest's PinResource
+        // endpoint 403s from the extension's origin but accepts the request
+        // when it goes out from pinterest.com's own JS context. The result
+        // gets posted via window.postMessage so injected.js/content.js pick
+        // it up the same way as any other XHR Pinterest itself makes.
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            world: "MAIN",
+            func: async (id) => {
+              try {
+                const data = encodeURIComponent(
+                  JSON.stringify({
+                    options: { id, field_set_key: "detailed" },
+                  }),
+                );
+                const url =
+                  "/resource/PinResource/get/?source_url=" +
+                  encodeURIComponent("/pin/" + id + "/") +
+                  "&data=" + data;
+                const res = await fetch(url, { credentials: "include" });
+                if (!res.ok) {
+                  console.log("[PinReel-injected] PinResource HTTP", res.status);
+                  return;
+                }
+                const json = await res.json();
+                window.postMessage(
+                  { source: "pinreel-capture", payload: json },
+                  "*",
+                );
+              } catch (e) {
+                console.log("[PinReel-injected] error", e?.message);
+              }
+            },
+            args: [pinId || ""],
+          });
+        } catch (e) {
+          console.log("[PinReel] inject failed", e?.message);
         }
+        setTimeout(cleanup, POST_LOAD_WAIT_MS);
       };
       chrome.tabs.onUpdated.addListener(onUpdated);
       setTimeout(cleanup, PER_PIN_TIMEOUT_MS);
