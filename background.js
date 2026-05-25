@@ -20,8 +20,8 @@ import {
 } from "./lib/settings.js";
 import { saveCapture, markSynced, listUnsynced } from "./lib/db.js";
 
-const POST_LOAD_WAIT_MS = 3500;
-const PER_PIN_TIMEOUT_MS = 12_000;
+const POST_LOAD_WAIT_MS = 7000;
+const PER_PIN_TIMEOUT_MS = 15_000;
 
 // Active batch state lives only in memory — if the worker dies we abort.
 const batchState = {
@@ -82,6 +82,13 @@ async function onLocalCaptures(items) {
   if (!Array.isArray(items) || items.length === 0) return;
   for (const it of items) {
     if (!it?.pinId) continue;
+    console.log("[PinReel] captured", it.pinId, {
+      hasVideoUrl: !!it.videoUrl,
+      slideCount: Array.isArray(it.slides) ? it.slides.length : 0,
+      slideVideos: Array.isArray(it.slides)
+        ? it.slides.filter((s) => s?.videoUrl).length
+        : 0,
+    });
     await saveCapture(it);
   }
   await trySyncToEndpoint();

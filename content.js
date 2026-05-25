@@ -19,17 +19,74 @@
     console.warn("[PinReel] could not inject hook", e);
   }
 
+  // Pin id of the page the helper landed on, if we're on /pin/123/. Used by
+  // the aggressive fallback extractor to attribute orphan video_list nodes.
+  function currentPagePinId() {
+    const m = window.location.pathname.match(/\/pin\/(\d+)/);
+    return m ? m[1] : null;
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== TAG || !data.payload) return;
     try {
-      const items = extractPins(data.payload);
+      const items = extractWithFallback(data.payload);
       if (items.length > 0) sendBatch(items);
     } catch (e) {
       console.warn("[PinReel] extract failed", e);
     }
   });
+
+  // Wraps extractPins with an aggressive fallback for the pin we're
+  // currently looking at: if the structured pass produced nothing useful
+  // for that pin, walk the response for any video_list and use those URLs
+  // as slides. This catches story_pin variants we don't know the shape of.
+  function extractWithFallback(tree) {
+    const items = extractPins(tree);
+    const targetId = currentPagePinId();
+    if (!targetId) return items;
+    const have = items.find((it) => it.pinId === targetId);
+    const targetIsThin =
+      !have ||
+      (!have.videoUrl &&
+        (!have.slides || !have.slides.some((s) => s.videoUrl)));
+    if (!targetIsThin) return items;
+    const fallback = extractAnyVideoUrls(tree);
+    if (fallback.length === 0) return items;
+    const slides = fallback.map((v) => ({ videoUrl: v }));
+    if (have) {
+      const existing = have.slides || [];
+      for (let i = 0; i < slides.length; i++) {
+        if (existing[i]?.imageUrl) slides[i].imageUrl = existing[i].imageUrl;
+      }
+      have.slides = slides;
+    } else {
+      items.push({ pinId: targetId, slides });
+    }
+    return items;
+  }
+
+  // Walk anywhere in the response for any object that has a video_list with
+  // at least one usable URL. Returns an ordered, de-duplicated list of the
+  // best playable URL per node. This is the fallback when the structured
+  // extractor doesn't recognise the shape (e.g. unknown story_pin_data
+  // variants, block_type numerics).
+  function extractAnyVideoUrls(tree) {
+    const urls = [];
+    const seen = new Set();
+    walk(tree, (node) => {
+      if (!node || typeof node !== "object") return;
+      const list = node.video_list;
+      if (!list || typeof list !== "object") return;
+      const url = bestVideoUrl(list);
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+    });
+    return urls;
+  }
 
   function scanInlineJson() {
     const scripts = document.querySelectorAll(
@@ -40,7 +97,7 @@
       const text = s.textContent || "";
       if (!text || text.length < 50) continue;
       try {
-        out.push(...extractPins(JSON.parse(text)));
+        out.push(...extractWithFallback(JSON.parse(text)));
       } catch {
         /* ignore */
       }
