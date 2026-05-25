@@ -19,7 +19,27 @@ const els = {
   dailyCap: document.getElementById("dailyCap"),
   saveSettingsBtn: document.getElementById("saveSettingsBtn"),
   settingsStatus: document.getElementById("settingsStatus"),
+
+  connStringInput: document.getElementById("connString"),
+  applyConnStringBtn: document.getElementById("applyConnStringBtn"),
+  connStringStatus: document.getElementById("connStringStatus"),
 };
+
+function parseConnectionString(raw) {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  const body = trimmed.startsWith("pinreel:") ? trimmed.slice(8) : trimmed;
+  try {
+    const json = atob(body);
+    const obj = JSON.parse(json);
+    if (typeof obj.endpoint !== "string" || typeof obj.token !== "string") return null;
+    if (!/^https?:\/\//i.test(obj.endpoint)) return null;
+    if (!obj.token.trim()) return null;
+    return { endpoint: obj.endpoint.trim(), token: obj.token.trim() };
+  } catch {
+    return null;
+  }
+}
 
 // --- tab nav ---
 document.querySelectorAll(".tab").forEach((t) => {
@@ -202,6 +222,25 @@ async function renderSettings() {
 els.syncToggle.addEventListener("click", async () => {
   const current = els.syncToggle.classList.contains("on");
   els.syncToggle.classList.toggle("on", !current);
+});
+
+els.applyConnStringBtn.addEventListener("click", async () => {
+  const parsed = parseConnectionString(els.connStringInput.value);
+  els.connStringStatus.style.display = "block";
+  if (!parsed) {
+    els.connStringStatus.textContent =
+      "Not a valid pinreel: connection string.";
+    return;
+  }
+  await setSettings({
+    endpoint: parsed.endpoint,
+    token: parsed.token,
+    syncEnabled: true,
+  });
+  els.connStringInput.value = "";
+  els.connStringStatus.textContent = "Connected — endpoint and token saved.";
+  await renderSettings();
+  await renderEndpointStatus();
 });
 
 els.saveSettingsBtn.addEventListener("click", async () => {

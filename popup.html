@@ -226,6 +226,17 @@
     </div>
 
     <div class="panel" id="panel-settings">
+      <label for="connString">Connection string</label>
+      <input id="connString" type="text" placeholder="pinreel:..." autocomplete="off" />
+      <button id="applyConnStringBtn" class="primary" style="margin-top: 6px">
+        Paste &amp; connect
+      </button>
+      <div id="connStringStatus" class="hint" style="display: none"></div>
+
+      <div style="margin-top: 12px; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-faint); text-align: center;">
+        or set manually
+      </div>
+
       <label for="endpoint">Endpoint base URL</label>
       <input id="endpoint" type="url" placeholder="https://example.com/api/external" />
 
