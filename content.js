@@ -52,7 +52,7 @@
       (!have.videoUrl &&
         (!have.slides || !have.slides.some((s) => s.videoUrl)));
     if (!targetIsThin) return items;
-    const fallback = extractAnyVideoUrls(tree);
+    const fallback = extractAnyVideoUrls(tree, targetId);
     if (fallback.length === 0) return items;
     const slides = fallback.map((v) => ({ videoUrl: v }));
     if (have) {
@@ -67,15 +67,17 @@
     return items;
   }
 
-  // Walk anywhere in the response for any object that has a video_list with
-  // at least one usable URL. Returns an ordered, de-duplicated list of the
-  // best playable URL per node. This is the fallback when the structured
-  // extractor doesn't recognise the shape (e.g. unknown story_pin_data
-  // variants, block_type numerics).
-  function extractAnyVideoUrls(tree) {
+  // Walk for any video_list with a usable URL, but ONLY within the subtree
+  // of the pin we're currently visiting. Pinterest pages render sidebars
+  // and related-pins panels that contain videos for *other* pins — picking
+  // those up would attribute random videos to the current pin.
+  function extractAnyVideoUrls(tree, scopeId) {
+    if (!scopeId) return [];
+    const subtree = findSubtreeById(tree, scopeId);
+    if (!subtree) return [];
     const urls = [];
     const seen = new Set();
-    walk(tree, (node) => {
+    walk(subtree, (node) => {
       if (!node || typeof node !== "object") return;
       const list = node.video_list;
       if (!list || typeof list !== "object") return;
@@ -86,6 +88,24 @@
       }
     });
     return urls;
+  }
+
+  // DFS for the first object whose .id matches the given pin id.
+  function findSubtreeById(node, id) {
+    if (!node || typeof node !== "object") return null;
+    if (node.id === id) return node;
+    if (Array.isArray(node)) {
+      for (const v of node) {
+        const found = findSubtreeById(v, id);
+        if (found) return found;
+      }
+      return null;
+    }
+    for (const k of Object.keys(node)) {
+      const found = findSubtreeById(node[k], id);
+      if (found) return found;
+    }
+    return null;
   }
 
   function scanInlineJson() {

@@ -18,7 +18,12 @@ import {
   getDailyUsage,
   bumpDailyUsage,
 } from "./lib/settings.js";
-import { saveCapture, markSynced, listUnsynced } from "./lib/db.js";
+import {
+  saveCapture,
+  markSynced,
+  listUnsynced,
+  recordVisitAttempt,
+} from "./lib/db.js";
 
 const POST_LOAD_WAIT_MS = 7000;
 const PER_PIN_TIMEOUT_MS = 15_000;
@@ -184,6 +189,12 @@ async function runQueueBatch() {
 
     try {
       await visitPinPage(todo[i].pinUrl);
+      // Always record an attempt — even if the page yielded no media. Without
+      // this, image-only carousels (which Pinterest still flags as
+      // multiple_images / animated) would re-enter the queue forever.
+      // recordVisitAttempt only writes if no record exists, so real captures
+      // posted by the content script during the visit are preserved.
+      await recordVisitAttempt(todo[i].pinId);
     } catch {
       // Carry on; one bad pin shouldn't stall the whole queue.
     }
