@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "PinReel Helper",
+  "version": "0.1.0",
+  "description": "Reads media URLs from Pinterest pages you are already viewing and POSTs them to an endpoint you configure.",
+  "permissions": ["storage", "scripting", "tabs", "activeTab"],
+  "host_permissions": [
+    "*://*.pinterest.com/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "PinReel Helper",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.pinterest.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js", "selector.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
