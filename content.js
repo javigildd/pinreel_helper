@@ -38,48 +38,65 @@
     }
   });
 
-  // Wraps extractPins with an aggressive fallback for the pin we're
-  // currently looking at: if the structured pass produced nothing useful
-  // for that pin, walk the response for any video_list and use those URLs
-  // as slides. This catches story_pin variants we don't know the shape of.
+  // When the helper is visiting a /pin/X page, Pinterest's response often
+  // contains the parent pin's data with its story-pin "pages" nested as
+  // sub-objects, each carrying its own numeric ID and its own video_list.
+  // The naive walker treats every such sub-object as a separate pin —
+  // resulting in N orphan captures saved under sub-IDs that Moodly doesn't
+  // know about, and the actual parent pin getting only the first video.
+  //
+  // Here we collapse the parent pin's entire subtree into ONE consolidated
+  // item with slides[], and drop the orphan sub-page items the walker
+  // would otherwise produce.
   function extractWithFallback(tree) {
     const items = extractPins(tree);
     const targetId = currentPagePinId();
     if (!targetId) return items;
-    const have = items.find((it) => it.pinId === targetId);
-    const targetIsThin =
-      !have ||
-      (!have.videoUrl &&
-        (!have.slides || !have.slides.some((s) => s.videoUrl)));
-    if (!targetIsThin) return items;
-    const fallback = extractAnyVideoUrls(tree, targetId);
-    if (fallback.length === 0) return items;
-    const slides = fallback.map((v) => ({ videoUrl: v }));
-    if (have) {
-      const existing = have.slides || [];
-      for (let i = 0; i < slides.length; i++) {
-        if (existing[i]?.imageUrl) slides[i].imageUrl = existing[i].imageUrl;
-      }
-      have.slides = slides;
+
+    const subtree = findSubtreeById(tree, targetId);
+    if (!subtree) return items;
+
+    const videoUrls = collectVideoUrls(subtree);
+    if (videoUrls.length === 0) return items;
+
+    const consolidated = { pinId: targetId };
+    if (videoUrls.length === 1) {
+      consolidated.videoUrl = videoUrls[0];
     } else {
-      items.push({ pinId: targetId, slides });
+      consolidated.slides = videoUrls.map((v) => ({ videoUrl: v }));
     }
-    return items;
+
+    // Drop the target's own previous entry plus any orphan items whose IDs
+    // are sub-objects of the target's subtree. Anything outside the subtree
+    // (related pins from sidebars, etc.) stays — those captures are still
+    // useful if the user happens to have those pins in their canvases.
+    const subtreeIds = new Set();
+    walk(subtree, (node) => {
+      if (
+        node &&
+        typeof node === "object" &&
+        typeof node.id === "string" &&
+        /^\d{6,}$/.test(node.id)
+      ) {
+        subtreeIds.add(node.id);
+      }
+    });
+    const kept = items.filter((it) => !subtreeIds.has(it.pinId));
+    kept.push(consolidated);
+    return kept;
   }
 
-  // Walk for any video_list with a usable URL, but ONLY within the subtree
-  // of the pin we're currently visiting. Pinterest pages render sidebars
-  // and related-pins panels that contain videos for *other* pins — picking
-  // those up would attribute random videos to the current pin.
-  function extractAnyVideoUrls(tree, scopeId) {
-    if (!scopeId) return [];
-    const subtree = findSubtreeById(tree, scopeId);
-    if (!subtree) return [];
+  // Walk a pin's subtree for every reachable video URL, in traversal order.
+  // Handles both node.video_list and the nested node.videos.video_list shape.
+  function collectVideoUrls(subtree) {
     const urls = [];
     const seen = new Set();
     walk(subtree, (node) => {
       if (!node || typeof node !== "object") return;
-      const list = node.video_list;
+      let list = node.video_list;
+      if (!list && node.videos && typeof node.videos === "object") {
+        list = node.videos.video_list || node.videos;
+      }
       if (!list || typeof list !== "object") return;
       const url = bestVideoUrl(list);
       if (url && !seen.has(url)) {
