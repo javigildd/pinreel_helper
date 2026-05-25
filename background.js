@@ -52,7 +52,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
   if (msg.kind === "PINREEL_LOCAL_CAPTURES") {
-    onLocalCaptures(msg.items).catch((e) => console.error(e));
+    onLocalCaptures(msg.items, sender?.tab?.id).catch((e) => console.error(e));
     return;
   }
   if (msg.kind === "PINREEL_GET_BATCH_STATE") {
@@ -83,8 +83,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function onLocalCaptures(items) {
+// Tracks in-flight queue-runner visits. Pinterest's pin-page response often
+// arrives across multiple XHRs, each with one slide-page's data under its
+// own sub-ID. Accumulating per-tab here means we can emit a single
+// consolidated capture for the parent pin once the tab is done, instead
+// of saving N orphans under sub-IDs Moodly has no pins for.
+const activeVisits = new Map(); // tabId -> { pinId, videoUrls: [], seenUrls: Set }
+
+async function onLocalCaptures(items, senderTabId) {
   if (!Array.isArray(items) || items.length === 0) return;
+
+  // If this batch came from a tab the queue runner is currently visiting,
+  // fold its video URLs into the visit's accumulator and drop the per-item
+  // pinId (sub-pages of story pins have their own IDs we can't use).
+  if (senderTabId !== undefined && activeVisits.has(senderTabId)) {
+    const state = activeVisits.get(senderTabId);
+    for (const it of items) {
+      if (!it) continue;
+      if (it.videoUrl && !state.seenUrls.has(it.videoUrl)) {
+        state.seenUrls.add(it.videoUrl);
+        state.videoUrls.push(it.videoUrl);
+      }
+      if (Array.isArray(it.slides)) {
+        for (const s of it.slides) {
+          if (s?.videoUrl && !state.seenUrls.has(s.videoUrl)) {
+            state.seenUrls.add(s.videoUrl);
+            state.videoUrls.push(s.videoUrl);
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // Fallback: captures from a tab not driven by the queue runner (user
+  // browsing feeds organically). Save each as-is, keyed by its own pinId.
   for (const it of items) {
     if (!it?.pinId) continue;
     console.log("[PinReel] captured", it.pinId, {
@@ -198,7 +231,7 @@ async function runQueueBatch() {
       if (resourceItem) {
         await saveCapture(resourceItem);
       } else {
-        await visitPinPage(todo[i].pinUrl);
+        await visitPinPage(todo[i].pinUrl, todo[i].pinId);
       }
       // Always record an attempt — even if both paths yielded no media.
       // recordVisitAttempt only writes if no record exists.
@@ -373,13 +406,22 @@ function bestImageUrlFromAny(images) {
   return null;
 }
 
-function visitPinPage(url) {
+function visitPinPage(url, pinId) {
   return new Promise((resolve) => {
     chrome.tabs.create({ url, active: false }, (tab) => {
       if (!tab || tab.id === undefined) return resolve();
       const tabId = tab.id;
+      // Register the visit so onLocalCaptures folds every video URL the
+      // content script forwards into one slides[] for this pinId.
+      if (pinId) {
+        activeVisits.set(tabId, {
+          pinId: String(pinId),
+          videoUrls: [],
+          seenUrls: new Set(),
+        });
+      }
       let settled = false;
-      const cleanup = () => {
+      const cleanup = async () => {
         if (settled) return;
         settled = true;
         chrome.tabs.onUpdated.removeListener(onUpdated);
@@ -387,6 +429,29 @@ function visitPinPage(url) {
           chrome.tabs.remove(tabId);
         } catch {
           /* ignore */
+        }
+        // Emit one consolidated capture for the visited pin using every
+        // video URL we accumulated during the visit.
+        const state = activeVisits.get(tabId);
+        if (state) {
+          activeVisits.delete(tabId);
+          if (state.videoUrls.length > 0) {
+            const item = { pinId: state.pinId };
+            if (state.videoUrls.length === 1) {
+              item.videoUrl = state.videoUrls[0];
+            } else {
+              item.slides = state.videoUrls.map((v) => ({ videoUrl: v }));
+            }
+            console.log("[PinReel] visit consolidated", state.pinId, {
+              videoCount: state.videoUrls.length,
+            });
+            await saveCapture(item);
+            await trySyncToEndpoint();
+          } else {
+            console.log("[PinReel] visit consolidated", state.pinId, {
+              videoCount: 0,
+            });
+          }
         }
         resolve();
       };
