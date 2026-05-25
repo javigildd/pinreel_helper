@@ -155,6 +155,17 @@
         });
       }
 
+      // Idea pins ("story pins") ship a different shape — pages with
+      // either direct video/image fields or block arrays. We flatten
+      // that into the same slides[] shape so the backend doesn't care
+      // what kind of carousel it was.
+      if (!item.slides && Array.isArray(node.story_pin_data?.pages)) {
+        const slides = node.story_pin_data.pages
+          .map((page) => storyPinPageToSlide(page))
+          .filter((s) => s && (s.imageUrl || s.videoUrl));
+        if (slides.length > 0) item.slides = slides;
+      }
+
       if (!item.videoUrl && !item.slides) return;
       const prev = seen.get(item.pinId);
       if (
@@ -190,6 +201,49 @@
       }
     }
     return null;
+  }
+
+  function storyPinPageToSlide(page) {
+    if (!page || typeof page !== "object") return null;
+    const slide = {};
+
+    // Shape A: page has direct image / video properties.
+    const directVideo = page.video || page.video_data;
+    const directImage = page.image || page.image_data;
+    if (directVideo) {
+      const vUrl = bestVideoUrl(directVideo.video_list || directVideo.videos || directVideo);
+      if (vUrl) slide.videoUrl = vUrl;
+      const imgs = directVideo.image_signature_data?.images || directVideo.images;
+      if (imgs && !slide.imageUrl) {
+        const i = bestImageUrl(imgs);
+        if (i) slide.imageUrl = i;
+      }
+    }
+    if (directImage && !slide.imageUrl) {
+      const imgs = directImage.images || directImage;
+      const i = bestImageUrl(imgs);
+      if (i) slide.imageUrl = i;
+    }
+
+    // Shape B: page has a blocks[] array; first video block wins for the
+    // video URL, first image block wins as a fallback poster.
+    if (Array.isArray(page.blocks)) {
+      for (const b of page.blocks) {
+        if (!b || typeof b !== "object") continue;
+        if (!slide.videoUrl && b.video) {
+          const vUrl = bestVideoUrl(
+            b.video.video_list || b.video.videos || b.video,
+          );
+          if (vUrl) slide.videoUrl = vUrl;
+        }
+        if (!slide.imageUrl && b.image?.images) {
+          const i = bestImageUrl(b.image.images);
+          if (i) slide.imageUrl = i;
+        }
+      }
+    }
+
+    return slide;
   }
 
   function bestImageUrl(images) {
