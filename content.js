@@ -29,7 +29,23 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
-    if (!data || data.source !== TAG || !data.payload) return;
+    if (!data) return;
+    // Forward diagnostic messages from injected page-context scripts to the
+    // background service worker so they show up in chrome://extensions
+    // service-worker DevTools (page console disappears with the tab).
+    if (data.source === "pinreel-debug") {
+      try {
+        chrome.runtime.sendMessage({
+          kind: "PINREEL_DEBUG",
+          msg: data.msg,
+          extra: data.extra,
+        });
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (data.source !== TAG || !data.payload) return;
     try {
       const items = extractWithFallback(data.payload);
       if (items.length > 0) sendBatch(items);

@@ -55,6 +55,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     onLocalCaptures(msg.items, sender?.tab?.id).catch((e) => console.error(e));
     return;
   }
+  if (msg.kind === "PINREEL_DEBUG") {
+    console.log("[PinReel-injected]", msg.msg, msg.extra || "");
+    return;
+  }
   if (msg.kind === "PINREEL_GET_BATCH_STATE") {
     sendResponse({
       running: batchState.running,
@@ -466,6 +470,13 @@ function visitPinPage(url, pinId) {
             target: { tabId },
             world: "MAIN",
             func: async (id) => {
+              function dbg(msg, extra) {
+                window.postMessage(
+                  { source: "pinreel-debug", msg, extra: extra || null },
+                  "*",
+                );
+              }
+              dbg("injected script start", { id });
               try {
                 const data = encodeURIComponent(
                   JSON.stringify({
@@ -476,18 +487,34 @@ function visitPinPage(url, pinId) {
                   "/resource/PinResource/get/?source_url=" +
                   encodeURIComponent("/pin/" + id + "/") +
                   "&data=" + data;
+                dbg("fetching PinResource", { url });
                 const res = await fetch(url, { credentials: "include" });
-                if (!res.ok) {
-                  console.log("[PinReel-injected] PinResource HTTP", res.status);
+                dbg("PinResource response", { status: res.status });
+                if (!res.ok) return;
+                const text = await res.text();
+                dbg("PinResource body", { length: text.length });
+                let json;
+                try {
+                  json = JSON.parse(text);
+                } catch (e) {
+                  dbg("JSON parse failed", { error: e.message, preview: text.slice(0, 200) });
                   return;
                 }
-                const json = await res.json();
+                // Count video_list nodes in the response for sanity check
+                let videoListCount = 0;
+                (function walk(o) {
+                  if (!o || typeof o !== "object") return;
+                  if (o.video_list) videoListCount++;
+                  if (Array.isArray(o)) o.forEach(walk);
+                  else for (const k of Object.keys(o)) walk(o[k]);
+                })(json);
+                dbg("video_list nodes in response", { count: videoListCount });
                 window.postMessage(
                   { source: "pinreel-capture", payload: json },
                   "*",
                 );
               } catch (e) {
-                console.log("[PinReel-injected] error", e?.message);
+                dbg("error", { message: e?.message });
               }
             },
             args: [pinId || ""],
