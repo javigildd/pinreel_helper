@@ -476,45 +476,81 @@ function visitPinPage(url, pinId) {
                   "*",
                 );
               }
+              function getCookie(name) {
+                const m = document.cookie.match(
+                  new RegExp("(^|; )" + name + "=([^;]+)"),
+                );
+                return m ? decodeURIComponent(m[2]) : null;
+              }
               dbg("injected script start", { id });
-              try {
-                const data = encodeURIComponent(
-                  JSON.stringify({
-                    options: { id, field_set_key: "detailed" },
-                  }),
-                );
-                const url =
-                  "/resource/PinResource/get/?source_url=" +
-                  encodeURIComponent("/pin/" + id + "/") +
-                  "&data=" + data;
-                dbg("fetching PinResource", { url });
-                const res = await fetch(url, { credentials: "include" });
-                dbg("PinResource response", { status: res.status });
-                if (!res.ok) return;
-                const text = await res.text();
-                dbg("PinResource body", { length: text.length });
-                let json;
+              const csrf = getCookie("csrftoken");
+              dbg("csrf token", { present: !!csrf });
+              // Try a few endpoints — Pinterest splits story-pin and classic
+              // pin data across different resources, and field_set_key varies.
+              const variants = [
+                { endpoint: "PinResource", fieldSet: "detailed" },
+                { endpoint: "PinResource", fieldSet: "story_pin_default" },
+                { endpoint: "StoryPinPageResource", fieldSet: "default" },
+                { endpoint: "PinResource", fieldSet: "react_main_pin" },
+                { endpoint: "PinResource", fieldSet: "default" },
+              ];
+              for (const v of variants) {
                 try {
-                  json = JSON.parse(text);
+                  const data = encodeURIComponent(
+                    JSON.stringify({
+                      options: { id, field_set_key: v.fieldSet },
+                    }),
+                  );
+                  const url =
+                    "/resource/" + v.endpoint + "/get/?source_url=" +
+                    encodeURIComponent("/pin/" + id + "/") +
+                    "&data=" + data;
+                  const headers = {
+                    Accept: "application/json, text/javascript, */*; q=0.01",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "X-Pinterest-AppState": "active",
+                    "X-Pinterest-Source-Url": "/pin/" + id + "/",
+                  };
+                  if (csrf) headers["X-CSRFToken"] = csrf;
+                  dbg("trying " + v.endpoint, { fieldSet: v.fieldSet });
+                  const res = await fetch(url, {
+                    credentials: "include",
+                    headers,
+                  });
+                  dbg(v.endpoint + " response", {
+                    status: res.status,
+                    fieldSet: v.fieldSet,
+                  });
+                  if (!res.ok) continue;
+                  const text = await res.text();
+                  let json;
+                  try {
+                    json = JSON.parse(text);
+                  } catch (e) {
+                    dbg("JSON parse failed", { error: e.message });
+                    continue;
+                  }
+                  let videoListCount = 0;
+                  (function walk(o) {
+                    if (!o || typeof o !== "object") return;
+                    if (o.video_list) videoListCount++;
+                    if (Array.isArray(o)) o.forEach(walk);
+                    else for (const k of Object.keys(o)) walk(o[k]);
+                  })(json);
+                  dbg(v.endpoint + " success", {
+                    fieldSet: v.fieldSet,
+                    bodyLength: text.length,
+                    videoListCount,
+                  });
+                  window.postMessage(
+                    { source: "pinreel-capture", payload: json },
+                    "*",
+                  );
+                  // If we already got videos, stop trying more variants.
+                  if (videoListCount > 1) break;
                 } catch (e) {
-                  dbg("JSON parse failed", { error: e.message, preview: text.slice(0, 200) });
-                  return;
+                  dbg("error trying " + v.endpoint, { error: e?.message });
                 }
-                // Count video_list nodes in the response for sanity check
-                let videoListCount = 0;
-                (function walk(o) {
-                  if (!o || typeof o !== "object") return;
-                  if (o.video_list) videoListCount++;
-                  if (Array.isArray(o)) o.forEach(walk);
-                  else for (const k of Object.keys(o)) walk(o[k]);
-                })(json);
-                dbg("video_list nodes in response", { count: videoListCount });
-                window.postMessage(
-                  { source: "pinreel-capture", payload: json },
-                  "*",
-                );
-              } catch (e) {
-                dbg("error", { message: e?.message });
               }
             },
             args: [pinId || ""],
