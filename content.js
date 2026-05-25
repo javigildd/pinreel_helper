@@ -19,127 +19,18 @@
     console.warn("[PinReel] could not inject hook", e);
   }
 
-  // Pin id of the page the helper landed on, if we're on /pin/123/. Used by
-  // the aggressive fallback extractor to attribute orphan video_list nodes.
-  function currentPagePinId() {
-    const m = window.location.pathname.match(/\/pin\/(\d+)/);
-    return m ? m[1] : null;
-  }
-
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
     if (!data) return;
-    // Forward diagnostic messages from injected page-context scripts to the
-    // background service worker so they show up in chrome://extensions
-    // service-worker DevTools (page console disappears with the tab).
-    if (data.source === "pinreel-debug") {
-      try {
-        chrome.runtime.sendMessage({
-          kind: "PINREEL_DEBUG",
-          msg: data.msg,
-          extra: data.extra,
-        });
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
     if (data.source !== TAG || !data.payload) return;
     try {
-      const items = extractWithFallback(data.payload);
+      const items = extractPins(data.payload);
       if (items.length > 0) sendBatch(items);
     } catch (e) {
       console.warn("[PinReel] extract failed", e);
     }
   });
-
-  // When the helper is visiting a /pin/X page, Pinterest's response often
-  // contains the parent pin's data with its story-pin "pages" nested as
-  // sub-objects, each carrying its own numeric ID and its own video_list.
-  // The naive walker treats every such sub-object as a separate pin —
-  // resulting in N orphan captures saved under sub-IDs that Moodly doesn't
-  // know about, and the actual parent pin getting only the first video.
-  //
-  // Here we collapse the parent pin's entire subtree into ONE consolidated
-  // item with slides[], and drop the orphan sub-page items the walker
-  // would otherwise produce.
-  function extractWithFallback(tree) {
-    const items = extractPins(tree);
-    const targetId = currentPagePinId();
-    if (!targetId) return items;
-
-    const subtree = findSubtreeById(tree, targetId);
-    if (!subtree) return items;
-
-    const videoUrls = collectVideoUrls(subtree);
-    if (videoUrls.length === 0) return items;
-
-    const consolidated = { pinId: targetId };
-    if (videoUrls.length === 1) {
-      consolidated.videoUrl = videoUrls[0];
-    } else {
-      consolidated.slides = videoUrls.map((v) => ({ videoUrl: v }));
-    }
-
-    // Drop the target's own previous entry plus any orphan items whose IDs
-    // are sub-objects of the target's subtree. Anything outside the subtree
-    // (related pins from sidebars, etc.) stays — those captures are still
-    // useful if the user happens to have those pins in their canvases.
-    const subtreeIds = new Set();
-    walk(subtree, (node) => {
-      if (
-        node &&
-        typeof node === "object" &&
-        typeof node.id === "string" &&
-        /^\d{6,}$/.test(node.id)
-      ) {
-        subtreeIds.add(node.id);
-      }
-    });
-    const kept = items.filter((it) => !subtreeIds.has(it.pinId));
-    kept.push(consolidated);
-    return kept;
-  }
-
-  // Walk a pin's subtree for every reachable video URL, in traversal order.
-  // Handles both node.video_list and the nested node.videos.video_list shape.
-  function collectVideoUrls(subtree) {
-    const urls = [];
-    const seen = new Set();
-    walk(subtree, (node) => {
-      if (!node || typeof node !== "object") return;
-      let list = node.video_list;
-      if (!list && node.videos && typeof node.videos === "object") {
-        list = node.videos.video_list || node.videos;
-      }
-      if (!list || typeof list !== "object") return;
-      const url = bestVideoUrl(list);
-      if (url && !seen.has(url)) {
-        seen.add(url);
-        urls.push(url);
-      }
-    });
-    return urls;
-  }
-
-  // DFS for the first object whose .id matches the given pin id.
-  function findSubtreeById(node, id) {
-    if (!node || typeof node !== "object") return null;
-    if (node.id === id) return node;
-    if (Array.isArray(node)) {
-      for (const v of node) {
-        const found = findSubtreeById(v, id);
-        if (found) return found;
-      }
-      return null;
-    }
-    for (const k of Object.keys(node)) {
-      const found = findSubtreeById(node[k], id);
-      if (found) return found;
-    }
-    return null;
-  }
 
   function scanInlineJson() {
     const scripts = document.querySelectorAll(
@@ -150,7 +41,7 @@
       const text = s.textContent || "";
       if (!text || text.length < 50) continue;
       try {
-        out.push(...extractWithFallback(JSON.parse(text)));
+        out.push(...extractPins(JSON.parse(text)));
       } catch {
         /* ignore */
       }

@@ -225,15 +225,13 @@ async function runQueueBatch() {
     }
 
     try {
-      // First try Pinterest's own resource endpoint with the user's cookies
-      // — this gets us per-slide videos for carousels reliably, which the
-      // pin-page tab visit can't because subsequent slides are lazy-loaded
-      // on user interaction. If that fails (no session, CSRF block, shape
-      // changed), fall back to visiting the page in a background tab so
-      // the content script can still pick up whatever's in the initial JSON.
-      // Always do a tab visit — visitPinPage injects a page-context fetch
-      // to PinResource (the same endpoint that 403s from the extension
-      // origin) which is how we get all carousel slide videos in one shot.
+      // Same model the original in-tree extension used: open the pin's
+      // page in a background tab, wait for Pinterest's JS to serve whatever
+      // it serves, then close. content.js + injected.js intercept any
+      // /resource/ JSON that fires and forward video URLs to the
+      // visit-state accumulator below. We don't try to fetch Pinterest's
+      // internal endpoints directly — they all return 403 outside the
+      // page's own JS context regardless of CSRF / headers.
       await visitPinPage(todo[i].pinUrl, todo[i].pinId);
       // Always record an attempt — even if both paths yielded no media.
       // recordVisitAttempt only writes if no record exists.
@@ -457,108 +455,11 @@ function visitPinPage(url, pinId) {
         }
         resolve();
       };
-      const onUpdated = async (id, info) => {
+      const onUpdated = (id, info) => {
         if (id !== tabId) return;
-        if (info.status !== "complete") return;
-        // Inject a fetch into the page context. Pinterest's PinResource
-        // endpoint 403s from the extension's origin but accepts the request
-        // when it goes out from pinterest.com's own JS context. The result
-        // gets posted via window.postMessage so injected.js/content.js pick
-        // it up the same way as any other XHR Pinterest itself makes.
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            world: "MAIN",
-            func: async (id) => {
-              function dbg(msg, extra) {
-                window.postMessage(
-                  { source: "pinreel-debug", msg, extra: extra || null },
-                  "*",
-                );
-              }
-              function getCookie(name) {
-                const m = document.cookie.match(
-                  new RegExp("(^|; )" + name + "=([^;]+)"),
-                );
-                return m ? decodeURIComponent(m[2]) : null;
-              }
-              dbg("injected script start", { id });
-              const csrf = getCookie("csrftoken");
-              dbg("csrf token", { present: !!csrf });
-              // Try a few endpoints — Pinterest splits story-pin and classic
-              // pin data across different resources, and field_set_key varies.
-              const variants = [
-                { endpoint: "PinResource", fieldSet: "detailed" },
-                { endpoint: "PinResource", fieldSet: "story_pin_default" },
-                { endpoint: "StoryPinPageResource", fieldSet: "default" },
-                { endpoint: "PinResource", fieldSet: "react_main_pin" },
-                { endpoint: "PinResource", fieldSet: "default" },
-              ];
-              for (const v of variants) {
-                try {
-                  const data = encodeURIComponent(
-                    JSON.stringify({
-                      options: { id, field_set_key: v.fieldSet },
-                    }),
-                  );
-                  const url =
-                    "/resource/" + v.endpoint + "/get/?source_url=" +
-                    encodeURIComponent("/pin/" + id + "/") +
-                    "&data=" + data;
-                  const headers = {
-                    Accept: "application/json, text/javascript, */*; q=0.01",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "X-Pinterest-AppState": "active",
-                    "X-Pinterest-Source-Url": "/pin/" + id + "/",
-                  };
-                  if (csrf) headers["X-CSRFToken"] = csrf;
-                  dbg("trying " + v.endpoint, { fieldSet: v.fieldSet });
-                  const res = await fetch(url, {
-                    credentials: "include",
-                    headers,
-                  });
-                  dbg(v.endpoint + " response", {
-                    status: res.status,
-                    fieldSet: v.fieldSet,
-                  });
-                  if (!res.ok) continue;
-                  const text = await res.text();
-                  let json;
-                  try {
-                    json = JSON.parse(text);
-                  } catch (e) {
-                    dbg("JSON parse failed", { error: e.message });
-                    continue;
-                  }
-                  let videoListCount = 0;
-                  (function walk(o) {
-                    if (!o || typeof o !== "object") return;
-                    if (o.video_list) videoListCount++;
-                    if (Array.isArray(o)) o.forEach(walk);
-                    else for (const k of Object.keys(o)) walk(o[k]);
-                  })(json);
-                  dbg(v.endpoint + " success", {
-                    fieldSet: v.fieldSet,
-                    bodyLength: text.length,
-                    videoListCount,
-                  });
-                  window.postMessage(
-                    { source: "pinreel-capture", payload: json },
-                    "*",
-                  );
-                  // If we already got videos, stop trying more variants.
-                  if (videoListCount > 1) break;
-                } catch (e) {
-                  dbg("error trying " + v.endpoint, { error: e?.message });
-                }
-              }
-            },
-            args: [pinId || ""],
-          });
-        } catch (e) {
-          console.log("[PinReel] inject failed", e?.message);
+        if (info.status === "complete") {
+          setTimeout(cleanup, POST_LOAD_WAIT_MS);
         }
-        setTimeout(cleanup, POST_LOAD_WAIT_MS);
       };
       chrome.tabs.onUpdated.addListener(onUpdated);
       setTimeout(cleanup, PER_PIN_TIMEOUT_MS);
