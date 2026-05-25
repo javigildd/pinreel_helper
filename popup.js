@@ -1,4 +1,9 @@
-import { getSettings, setSettings } from "./lib/settings.js";
+import {
+  getSettings,
+  setSettings,
+  resetDailyUsage,
+} from "./lib/settings.js";
+import { clearAllCaptures } from "./lib/db.js";
 
 const els = {
   endpointDot: document.getElementById("endpointDot"),
@@ -23,6 +28,9 @@ const els = {
   connStringInput: document.getElementById("connString"),
   applyConnStringBtn: document.getElementById("applyConnStringBtn"),
   connStringStatus: document.getElementById("connStringStatus"),
+
+  resetCacheBtn: document.getElementById("resetCacheBtn"),
+  resetCacheStatus: document.getElementById("resetCacheStatus"),
 };
 
 function parseConnectionString(raw) {
@@ -241,6 +249,39 @@ els.applyConnStringBtn.addEventListener("click", async () => {
   els.connStringStatus.textContent = "Connected — endpoint and token saved.";
   await renderSettings();
   await renderEndpointStatus();
+});
+
+els.resetCacheBtn.addEventListener("click", async () => {
+  const ok = confirm(
+    "Wipe every captured-media row on the endpoint AND the local " +
+      "IndexedDB / daily counter? Already-processed pins will re-enter " +
+      "the queue.",
+  );
+  if (!ok) return;
+  els.resetCacheStatus.style.display = "block";
+  els.resetCacheStatus.textContent = "Clearing…";
+  els.resetCacheBtn.disabled = true;
+  let serverNote = "";
+  try {
+    const res = await authedFetch("/media", { method: "DELETE" });
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      serverNote = `endpoint cleared (${data.deleted ?? 0} rows)`;
+    } else {
+      serverNote = `endpoint clear failed (HTTP ${res.status})`;
+    }
+  } catch (e) {
+    serverNote = `endpoint clear failed (${e.message})`;
+  }
+  try {
+    await clearAllCaptures();
+    await resetDailyUsage();
+  } catch (e) {
+    serverNote += `; local clear failed (${e.message})`;
+  }
+  els.resetCacheStatus.textContent = `${serverNote}, local cache cleared.`;
+  els.resetCacheBtn.disabled = false;
+  await refreshQueue();
 });
 
 els.saveSettingsBtn.addEventListener("click", async () => {

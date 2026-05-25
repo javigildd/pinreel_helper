@@ -259,6 +259,19 @@
       <button id="saveSettingsBtn" class="primary">Save</button>
       <div id="settingsStatus" class="hint" style="display: none"></div>
 
+      <div style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px">
+        <div style="color: var(--text); font-size: 12px; margin-bottom: 4px">
+          Clear extension cache
+        </div>
+        <div class="hint" style="margin-bottom: 8px">
+          Wipes the captured-media rows on the endpoint AND the local
+          IndexedDB / daily counter, so already-processed pins re-enter
+          the queue. Useful to re-test a board.
+        </div>
+        <button id="resetCacheBtn" class="secondary">Clear all captures</button>
+        <div id="resetCacheStatus" class="hint" style="display: none"></div>
+      </div>
+
       <div class="hint" style="margin-top: 14px">
         Don't have an endpoint?
         <a href="https://github.com/javigildd/pinreel_helper/blob/main/API.md" target="_blank">See the API contract</a>
@@ -266,7 +279,7 @@
       </div>
     </div>
 
-    <div class="footer">v0.1.0 · MIT · <a href="https://github.com/javigildd/pinreel_helper" target="_blank">repo</a></div>
+    <div class="footer">v0.4.0 · MIT · <a href="https://github.com/javigildd/pinreel_helper" target="_blank">repo</a></div>
 
     <script type="module" src="popup.js"></script>
   </body>
