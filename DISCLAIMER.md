@@ -6,7 +6,7 @@ PinReel Helper is a tool you install and operate in your own browser. It only ac
 
 The websites you visit have their own Terms of Service. Pinterest's user terms in particular prohibit automated access to Pinterest in ways that go beyond personal, individual use. This extension processes pin pages only when you click a button in its popup — it is not a bot or a scraper. But it is **possible** to use it in ways that look automated to Pinterest (e.g. enabling Sync and walking thousands of pins in a short window).
 
-The defaults are conservative: a 12 second delay between pin loads with random jitter, a 75 second pause every 15 pins, a 200-pin per-session cap and a 500-pin per-day cap. You can adjust those in Settings; if you raise them aggressively, please understand you are using your own account at your own risk.
+The defaults are conservative: a 12 second delay between pin loads with random jitter, a 75 second pause every 15 pins, a 100-pin per-session cap and a 100-pin per-day cap. You can adjust those in Settings; if you raise them aggressively, please understand you are using your own account at your own risk.
 
 If Pinterest (or any other site you visit) restricts your account because of your usage of this tool, the authors of this extension are not responsible.
 
