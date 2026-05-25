@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PinReel Helper",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Reads media URLs from Pinterest pages you are already viewing and POSTs them to an endpoint you configure.",
   "permissions": ["storage", "scripting", "tabs", "activeTab"],
   "host_permissions": [

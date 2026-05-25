@@ -100,16 +100,16 @@ async function onLocalCaptures(items, senderTabId) {
     const state = activeVisits.get(senderTabId);
     for (const it of items) {
       if (!it) continue;
-      if (it.videoUrl && !state.seenUrls.has(it.videoUrl)) {
-        state.seenUrls.add(it.videoUrl);
-        state.videoUrls.push(it.videoUrl);
-      }
+      const addUrl = (u, source) => {
+        if (!u || state.seenUrls.has(u)) return;
+        state.seenUrls.add(u);
+        state.videoUrls.push(u);
+        console.log("[PinReel] +video", state.pinId, source, it.pinId || "?", u);
+      };
+      addUrl(it.videoUrl, "top");
       if (Array.isArray(it.slides)) {
-        for (const s of it.slides) {
-          if (s?.videoUrl && !state.seenUrls.has(s.videoUrl)) {
-            state.seenUrls.add(s.videoUrl);
-            state.videoUrls.push(s.videoUrl);
-          }
+        for (let i = 0; i < it.slides.length; i++) {
+          addUrl(it.slides[i]?.videoUrl, `slide${i}`);
         }
       }
     }
